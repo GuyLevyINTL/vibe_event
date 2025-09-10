@@ -1,0 +1,328 @@
+/**
+ * Integration Tests for Break Breaker Game
+ * Tests component interactions and game flow
+ */
+
+// Setup DOM environment
+const { JSDOM } = require('jsdom');
+
+describe('Break Breaker Game Integration Tests', () => {
+    let dom;
+    let document;
+    let window;
+    let game;
+
+    beforeEach(() => {
+        // Create a DOM environment
+        dom = new JSDOM(`
+            <!DOCTYPE html>
+            <html>
+            <body>
+                <div id="score">0</div>
+                <div id="lives">3</div>
+                <div id="gameMessage"></div>
+                <button id="startBtn">Start Game</button>
+                <button id="resetBtn">Reset Game</button>
+                <canvas id="gameCanvas" width="800" height="600"></canvas>
+            </body>
+            </html>
+        `, {
+            pretendToBeVisual: true,
+            resources: "usable"
+        });
+
+        document = dom.window.document;
+        window = dom.window;
+
+        // Setup global objects
+        global.document = document;
+        global.window = window;
+        global.HTMLCanvasElement = window.HTMLCanvasElement;
+        global.requestAnimationFrame = jest.fn(cb => setTimeout(cb, 16));
+
+        // Mock canvas context
+        HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+            fillRect: jest.fn(),
+            strokeRect: jest.fn(),
+            fillStyle: '',
+            strokeStyle: '',
+            lineWidth: 0,
+            beginPath: jest.fn(),
+            arc: jest.fn(),
+            fill: jest.fn(),
+            stroke: jest.fn(),
+            moveTo: jest.fn(),
+            lineTo: jest.fn(),
+            createLinearGradient: jest.fn(() => ({
+                addColorStop: jest.fn()
+            })),
+            createRadialGradient: jest.fn(() => ({
+                addColorStop: jest.fn()
+            }))
+        }));
+
+        // Load and initialize game
+        const fs = require('fs');
+        const path = require('path');
+        const gameScript = fs.readFileSync(path.join(__dirname, '../script.js'), 'utf8');
+        
+        // Remove auto-initialization
+        const modifiedScript = gameScript.replace(/document\.addEventListener\('DOMContentLoaded'.*?\}\);/s, '');
+        eval(modifiedScript);
+        
+        game = new BreakBreakerGame();
+    });
+
+    afterEach(() => {
+        dom.window.close();
+    });
+
+    describe('Game Flow Integration', () => {
+        test('should complete full game startup sequence', () => {
+            // Initial state
+            expect(game.gameRunning).toBe(false);
+            expect(game.score).toBe(0);
+            expect(game.lives).toBe(3);
+
+            // Start game
+            game.startGame();
+            expect(game.gameRunning).toBe(true);
+            expect(game.startBtn.disabled).toBe(true);
+
+            // Launch ball
+            game.launchBall();
+            expect(game.ballLaunched).toBe(true);
+            expect(game.ball.dx).not.toBe(0);
+            expect(game.ball.dy).not.toBe(0);
+        });
+
+        test('should handle complete game reset cycle', () => {
+            // Modify game state
+            game.gameRunning = true;
+            game.ballLaunched = true;
+            game.score = 150;
+            game.lives = 1;
+            game.bricks[0].visible = false;
+            game.ball.x = 100;
+            game.ball.y = 100;
+
+            // Reset game
+            game.resetGame();
+
+            // Verify complete reset
+            expect(game.gameRunning).toBe(false);
+            expect(game.ballLaunched).toBe(false);
+            expect(game.score).toBe(0);
+            expect(game.lives).toBe(3);
+            expect(game.bricks.every(brick => brick.visible)).toBe(true);
+            expect(game.ball.x).toBe(game.canvas.width / 2);
+            expect(game.startBtn.disabled).toBe(false);
+        });
+
+        test('should handle ball loss and life reduction sequence', () => {
+            game.gameRunning = true;
+            game.ballLaunched = true;
+            game.lives = 2;
+
+            // Simulate ball falling
+            game.ball.y = game.canvas.height + 10;
+            game.updateBall();
+
+            // Verify life lost and ball reset
+            expect(game.lives).toBe(1);
+            expect(game.ballLaunched).toBe(false);
+            expect(game.ball.y).toBe(game.canvas.height - 50);
+            expect(game.gameRunning).toBe(true); // Game should continue
+        });
+
+        test('should handle game over sequence', () => {
+            game.gameRunning = true;
+            game.ballLaunched = true;
+            game.lives = 1; // Last life
+
+            // Simulate ball falling
+            game.ball.y = game.canvas.height + 10;
+            game.updateBall();
+
+            // Verify game over
+            expect(game.lives).toBe(0);
+            expect(game.gameRunning).toBe(false);
+            expect(game.gameLost).toBe(true);
+            expect(game.startBtn.disabled).toBe(false);
+        });
+
+        test('should handle win condition sequence', () => {
+            game.gameRunning = true;
+            
+            // Remove all but one brick
+            for (let i = 1; i < game.bricks.length; i++) {
+                game.bricks[i].visible = false;
+            }
+
+            // Remove last brick
+            game.bricks[0].visible = false;
+            game.checkWinCondition();
+
+            // Verify win
+            expect(game.gameWon).toBe(true);
+            expect(game.gameRunning).toBe(false);
+            expect(game.startBtn.disabled).toBe(false);
+        });
+    });
+
+    describe('Paddle and Ball Interaction', () => {
+        test('should handle paddle collision with angle calculation', () => {
+            game.ballLaunched = true;
+            
+            // Position ball to hit center of paddle
+            game.ball.x = game.paddle.x + game.paddle.width / 2;
+            game.ball.y = game.paddle.y - game.ball.radius;
+            game.ball.dy = 3; // Moving down
+
+            game.checkCollisions();
+
+            // Ball should bounce straight up from center hit
+            expect(game.ball.dy).toBeLessThan(0);
+            expect(Math.abs(game.ball.dx)).toBeLessThan(1); // Should be close to 0
+        });
+
+        test('should handle paddle edge collision', () => {
+            game.ballLaunched = true;
+            
+            // Position ball to hit edge of paddle
+            game.ball.x = game.paddle.x + game.paddle.width - 10;
+            game.ball.y = game.paddle.y - game.ball.radius;
+            game.ball.dy = 3;
+
+            game.checkCollisions();
+
+            // Ball should bounce at an angle
+            expect(game.ball.dy).toBeLessThan(0);
+            expect(Math.abs(game.ball.dx)).toBeGreaterThan(0);
+        });
+    });
+
+    describe('Brick Collision and Scoring', () => {
+        test('should handle brick collision and scoring', () => {
+            const initialScore = game.score;
+            const brick = game.bricks[0];
+            const expectedPoints = brick.points;
+
+            // Position ball to hit brick
+            game.ball.x = brick.x + brick.width / 2;
+            game.ball.y = brick.y + brick.height / 2;
+
+            game.checkCollisions();
+
+            expect(brick.visible).toBe(false);
+            expect(game.score).toBe(initialScore + expectedPoints);
+        });
+
+        test('should handle multiple brick collisions in sequence', () => {
+            let initialScore = game.score;
+            
+            // Hit first brick
+            let brick = game.bricks[0];
+            game.ball.x = brick.x + brick.width / 2;
+            game.ball.y = brick.y + brick.height / 2;
+            game.checkCollisions();
+            
+            expect(game.score).toBe(initialScore + brick.points);
+            expect(brick.visible).toBe(false);
+
+            // Hit second brick
+            initialScore = game.score;
+            brick = game.bricks[1];
+            game.ball.x = brick.x + brick.width / 2;
+            game.ball.y = brick.y + brick.height / 2;
+            game.checkCollisions();
+
+            expect(game.score).toBe(initialScore + brick.points);
+            expect(brick.visible).toBe(false);
+        });
+    });
+
+    describe('Keyboard Input Integration', () => {
+        test('should handle continuous paddle movement', () => {
+            const initialX = game.paddle.x;
+            
+            // Simulate holding left key
+            game.keys['arrowleft'] = true;
+            
+            // Update multiple times
+            for (let i = 0; i < 5; i++) {
+                game.updatePaddle();
+            }
+            
+            expect(game.paddle.x).toBe(initialX - (game.paddle.speed * 5));
+        });
+
+        test('should handle simultaneous key presses', () => {
+            const initialX = game.paddle.x;
+            
+            // Press both left and right (should cancel out)
+            game.keys['arrowleft'] = true;
+            game.keys['arrowright'] = true;
+            
+            game.updatePaddle();
+            
+            expect(game.paddle.x).toBe(initialX);
+        });
+    });
+
+    describe('Game State Persistence', () => {
+        test('should maintain score across ball resets', () => {
+            game.score = 100;
+            game.lives = 2;
+            
+            // Reset ball (lose life)
+            game.resetBall();
+            
+            expect(game.score).toBe(100); // Score should persist
+            expect(game.lives).toBe(2); // Lives unchanged by ball reset
+        });
+
+        test('should maintain brick states during gameplay', () => {
+            // Break some bricks
+            game.bricks[0].visible = false;
+            game.bricks[5].visible = false;
+            game.bricks[10].visible = false;
+
+            const brokenBricks = game.bricks.filter(b => !b.visible).length;
+            
+            // Reset ball
+            game.resetBall();
+            
+            // Brick states should persist
+            expect(game.bricks.filter(b => !b.visible).length).toBe(brokenBricks);
+        });
+    });
+
+    describe('Performance and Edge Cases', () => {
+        test('should handle rapid ball movement without errors', () => {
+            game.ballLaunched = true;
+            game.ball.dx = 20; // Very fast
+            game.ball.dy = -20;
+
+            // Multiple rapid updates
+            for (let i = 0; i < 100; i++) {
+                expect(() => game.updateBall()).not.toThrow();
+            }
+        });
+
+        test('should handle ball at exact boundary positions', () => {
+            game.ballLaunched = true;
+            
+            // Test exact boundaries
+            game.ball.x = game.ball.radius;
+            game.ball.y = game.ball.radius;
+            
+            expect(() => game.updateBall()).not.toThrow();
+            
+            game.ball.x = game.canvas.width - game.ball.radius;
+            game.ball.y = game.canvas.height - game.ball.radius;
+            
+            expect(() => game.updateBall()).not.toThrow();
+        });
+    });
+});

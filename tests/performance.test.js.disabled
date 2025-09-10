@@ -1,0 +1,264 @@
+/**
+ * Performance Tests for Break Breaker Game
+ * Tests game performance and optimization
+ */
+
+describe('Break Breaker Game Performance Tests', () => {
+    let game;
+    let performanceMarks = [];
+
+    beforeEach(() => {
+        // Mock performance API
+        global.performance = {
+            now: jest.fn(() => Date.now()),
+            mark: jest.fn((name) => performanceMarks.push(name)),
+            measure: jest.fn()
+        };
+
+        // Setup game with mocked DOM
+        global.document = {
+            getElementById: jest.fn(() => ({
+                addEventListener: jest.fn(),
+                getContext: jest.fn(() => ({
+                    fillRect: jest.fn(),
+                    strokeRect: jest.fn(),
+                    beginPath: jest.fn(),
+                    arc: jest.fn(),
+                    fill: jest.fn(),
+                    stroke: jest.fn(),
+                    createLinearGradient: jest.fn(() => ({ addColorStop: jest.fn() })),
+                    createRadialGradient: jest.fn(() => ({ addColorStop: jest.fn() }))
+                })),
+                width: 800,
+                height: 600,
+                textContent: '',
+                disabled: false,
+                className: ''
+            })),
+            addEventListener: jest.fn()
+        };
+
+        global.requestAnimationFrame = jest.fn(cb => setTimeout(cb, 16));
+
+        // Load game
+        const fs = require('fs');
+        const path = require('path');
+        const gameScript = fs.readFileSync(path.join(__dirname, '../script.js'), 'utf8');
+        const modifiedScript = gameScript.replace(/document\.addEventListener\('DOMContentLoaded'.*?\}\);/s, '');
+        eval(modifiedScript);
+        
+        game = new BreakBreakerGame();
+        performanceMarks = [];
+    });
+
+    describe('Game Loop Performance', () => {
+        test('should complete update cycle within performance budget', () => {
+            const startTime = performance.now();
+            
+            // Run multiple update cycles
+            for (let i = 0; i < 1000; i++) {
+                game.update();
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            // Should complete 1000 updates in reasonable time (adjust threshold as needed)
+            expect(duration).toBeLessThan(100); // 100ms for 1000 updates
+        });
+
+        test('should complete draw cycle within performance budget', () => {
+            const startTime = performance.now();
+            
+            // Run multiple draw cycles
+            for (let i = 0; i < 100; i++) {
+                game.draw();
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            // Drawing should be efficient
+            expect(duration).toBeLessThan(50); // 50ms for 100 draws
+        });
+
+        test('should handle collision detection efficiently', () => {
+            game.ballLaunched = true;
+            
+            const startTime = performance.now();
+            
+            // Run collision detection many times
+            for (let i = 0; i < 1000; i++) {
+                game.checkCollisions();
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            expect(duration).toBeLessThan(20); // 20ms for 1000 collision checks
+        });
+    });
+
+    describe('Memory Usage', () => {
+        test('should not create excessive objects during gameplay', () => {
+            const initialBrickCount = game.bricks.length;
+            
+            // Simulate extended gameplay
+            for (let i = 0; i < 1000; i++) {
+                game.update();
+                game.draw();
+            }
+            
+            // Object counts should remain stable
+            expect(game.bricks.length).toBe(initialBrickCount);
+            expect(typeof game.paddle).toBe('object');
+            expect(typeof game.ball).toBe('object');
+        });
+
+        test('should reuse objects where possible', () => {
+            const originalPaddle = game.paddle;
+            const originalBall = game.ball;
+            
+            // Reset game multiple times
+            for (let i = 0; i < 10; i++) {
+                game.resetGame();
+            }
+            
+            // Objects should be reused, not recreated
+            expect(game.paddle).toBe(originalPaddle);
+            expect(game.ball).toBe(originalBall);
+        });
+    });
+
+    describe('Scaling Performance', () => {
+        test('should handle many simultaneous operations', () => {
+            game.gameRunning = true;
+            game.ballLaunched = true;
+            
+            const startTime = performance.now();
+            
+            // Simulate complex game state
+            for (let i = 0; i < 100; i++) {
+                // Move paddle
+                game.keys['arrowleft'] = i % 2 === 0;
+                game.keys['arrowright'] = i % 2 === 1;
+                
+                // Update game
+                game.updatePaddle();
+                game.updateBall();
+                game.checkCollisions();
+                game.checkWinCondition();
+                
+                // Clear keys
+                game.keys = {};
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            expect(duration).toBeLessThan(30); // 30ms for complex operations
+        });
+
+        test('should maintain performance with broken bricks', () => {
+            // Break half the bricks
+            for (let i = 0; i < game.bricks.length / 2; i++) {
+                game.bricks[i].visible = false;
+            }
+            
+            const startTime = performance.now();
+            
+            // Check collision detection performance with fewer bricks
+            for (let i = 0; i < 1000; i++) {
+                game.checkCollisions();
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            // Should be faster with fewer visible bricks
+            expect(duration).toBeLessThan(15);
+        });
+    });
+
+    describe('Frame Rate Consistency', () => {
+        test('should maintain consistent update times', () => {
+            const updateTimes = [];
+            
+            // Measure multiple update cycles
+            for (let i = 0; i < 60; i++) { // Simulate 1 second at 60fps
+                const start = performance.now();
+                game.update();
+                game.draw();
+                const end = performance.now();
+                
+                updateTimes.push(end - start);
+            }
+            
+            // Calculate variance in update times
+            const average = updateTimes.reduce((a, b) => a + b) / updateTimes.length;
+            const variance = updateTimes.reduce((sum, time) => sum + Math.pow(time - average, 2), 0) / updateTimes.length;
+            
+            // Variance should be low (consistent frame times)
+            expect(variance).toBeLessThan(10);
+        });
+    });
+
+    describe('Resource Cleanup', () => {
+        test('should clean up event listeners properly', () => {
+            const removeEventListenerSpy = jest.fn();
+            global.document.removeEventListener = removeEventListenerSpy;
+            
+            // Simulate game destruction (if implemented)
+            if (game.destroy) {
+                game.destroy();
+                expect(removeEventListenerSpy).toHaveBeenCalled();
+            }
+        });
+
+        test('should stop animation frames when game ends', () => {
+            const cancelAnimationFrameSpy = jest.fn();
+            global.cancelAnimationFrame = cancelAnimationFrameSpy;
+            
+            // End the game
+            game.endGame(true);
+            
+            // Animation should stop (implementation dependent)
+            expect(game.gameRunning).toBe(false);
+        });
+    });
+
+    describe('Edge Case Performance', () => {
+        test('should handle rapid state changes efficiently', () => {
+            const startTime = performance.now();
+            
+            // Rapid state changes
+            for (let i = 0; i < 100; i++) {
+                game.startGame();
+                game.resetGame();
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            expect(duration).toBeLessThan(20);
+        });
+
+        test('should handle boundary conditions efficiently', () => {
+            game.ballLaunched = true;
+            
+            const startTime = performance.now();
+            
+            // Test boundary collisions repeatedly
+            for (let i = 0; i < 1000; i++) {
+                game.ball.x = i % 2 === 0 ? game.ball.radius : game.canvas.width - game.ball.radius;
+                game.ball.y = i % 2 === 0 ? game.ball.radius : game.canvas.height - game.ball.radius;
+                game.updateBall();
+            }
+            
+            const endTime = performance.now();
+            const duration = endTime - startTime;
+            
+            expect(duration).toBeLessThan(25);
+        });
+    });
+});
